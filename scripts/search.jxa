@@ -1,0 +1,23 @@
+// search.jxa: contacts whose name, nickname or organisation contains __args.query.
+// Case and accent insensitive, so "zoe" finds "Zoë".
+
+(function () {
+  var store = $.CNContactStore.alloc.init;
+  var access = ensureAccess(store);
+  if (!access.ok) return JSON.stringify(access);
+
+  function fold(s) {
+    return unwrap($(s).stringByFoldingWithOptionsLocale(1 | 128, undefined)).toLowerCase();
+  }
+
+  var q = fold(__args.query || '');
+  var limit = __args.limit || 50;
+  var matches = [];
+  var all = allContacts(store);
+  for (var i = 0; i < all.length && matches.length < limit; i++) {
+    var c = serialise(all[i]);
+    var hay = fold([c.name, c.nickname, c.organization].join(' '));
+    if (hay.indexOf(q) !== -1) matches.push(c);
+  }
+  return JSON.stringify({ ok: true, count: matches.length, contacts: matches });
+})();

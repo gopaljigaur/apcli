@@ -1,0 +1,15 @@
+// create.jxa: a new contact from __args (same shape as update's changes).
+
+(function () {
+  var store = $.CNContactStore.alloc.init;
+  var access = ensureAccess(store);
+  if (!access.ok) return JSON.stringify(access);
+
+  var m = $.CNMutableContact.alloc.init;
+  applyChanges(m, __args);
+  var req = $.CNSaveRequest.alloc.init;
+  req.addContactToContainerWithIdentifier(m, undefined);
+  var saved = save(store, req);
+  if (!saved.ok) return JSON.stringify(saved);
+  return JSON.stringify({ ok: true, contact: serialise(fetchById(store, unwrap(m.identifier))) });
+})();

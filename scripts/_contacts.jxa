@@ -1,0 +1,217 @@
+// Shared by every script: access, fetch keys, and how a contact is serialised.
+// jxa-runner prepends this file to the named script.
+
+ObjC.import('Foundation');
+ObjC.import('Contacts');
+
+function unwrap(x) {
+  var v = ObjC.unwrap(x);
+  return v === undefined || v === null ? '' : String(v);
+}
+
+function ensureAccess(store) {
+  // JXA bridges this enum as a string, so compare numbers.
+  var status = Number($.CNContactStore.authorizationStatusForEntityType($.CNEntityTypeContacts));
+  // 3 = authorized, 4 = limited (macOS 15+); both can read what they were given.
+  if (status === 3 || status === 4) return { ok: true };
+  if (status === 0) {
+    var done = false;
+    var granted = false;
+    store.requestAccessForEntityTypeCompletionHandler($.CNEntityTypeContacts, function (g) {
+      granted = !!g;
+      done = true;
+    });
+    var start = $.NSDate.date;
+    while (!done && $.NSDate.date.timeIntervalSinceDate(start) < 30) {
+      $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.05));
+    }
+    if (granted) return { ok: true };
+  }
+  return {
+    ok: false,
+    error: {
+      code: 'NOT_AUTHORIZED',
+      message:
+        'Contacts access not granted. Allow your terminal (and/or "osascript") in System Settings > Privacy & Security > Contacts.'
+    }
+  };
+}
+
+var KEYS = [
+  'identifier', 'givenName', 'familyName', 'nickname', 'organizationName',
+  'phoneNumbers', 'emailAddresses', 'socialProfiles', 'instantMessageAddresses'
+];
+
+function keysToFetch() {
+  return $(KEYS);
+}
+
+function label(lv) {
+  var raw = lv.label;
+  if (!raw || raw.isNil()) return '';
+  return unwrap($.CNLabeledValue.localizedStringForLabel(raw));
+}
+
+function list(array, read) {
+  var out = [];
+  for (var i = 0; i < array.count; i++) out.push(read(array.objectAtIndex(i)));
+  return out;
+}
+
+function serialise(c) {
+  var given = unwrap(c.givenName);
+  var family = unwrap(c.familyName);
+  return {
+    id: unwrap(c.identifier),
+    name: [given, family].filter(Boolean).join(' ') || unwrap(c.organizationName),
+    givenName: given,
+    familyName: family,
+    nickname: unwrap(c.nickname),
+    organization: unwrap(c.organizationName),
+    phones: list(c.phoneNumbers, function (lv) {
+      return { label: label(lv), value: unwrap(lv.value.stringValue) };
+    }),
+    emails: list(c.emailAddresses, function (lv) {
+      return { label: label(lv), value: unwrap(lv.value) };
+    }),
+    social: list(c.socialProfiles, function (lv) {
+      var p = lv.value;
+      return {
+        label: label(lv),
+        service: unwrap(p.service),
+        username: unwrap(p.username),
+        userIdentifier: unwrap(p.userIdentifier),
+        url: unwrap(p.urlString)
+      };
+    }),
+    im: list(c.instantMessageAddresses, function (lv) {
+      var a = lv.value;
+      return { label: label(lv), service: unwrap(a.service), username: unwrap(a.username) };
+    })
+  };
+}
+
+// Every contact, unified the way Contacts.app shows them.
+function allContacts(store) {
+  var out = [];
+  var req = $.CNContactFetchRequest.alloc.initWithKeysToFetch(keysToFetch());
+  req.unifyResults = true;
+  store.enumerateContactsWithFetchRequestErrorUsingBlock(req, Ref(), function (c) {
+    out.push(c);
+  });
+  return out;
+}
+
+// Labels as Contacts stores them; anything else is kept as a custom label.
+var LABELS = {
+  mobile: 'CNLabelPhoneNumberMobile', iphone: 'CNLabelPhoneNumberiPhone', main: 'CNLabelPhoneNumberMain',
+  home: 'CNLabelHome', work: 'CNLabelWork', other: 'CNLabelOther'
+};
+
+function labelFor(name) {
+  if (!name) return $.CNLabelOther;
+  var key = LABELS[String(name).toLowerCase()];
+  return key ? $[key] : $(String(name));
+}
+
+function labelled(name, value) {
+  return $.CNLabeledValue.labeledValueWithLabelValue(labelFor(name), value);
+}
+
+function phone(p) {
+  return labelled(p.label || 'mobile', $.CNPhoneNumber.phoneNumberWithStringValue(p.value));
+}
+
+function email(e) {
+  return labelled(e.label || 'home', $(e.value));
+}
+
+function social(s) {
+  return labelled(s.label || s.service, $.CNSocialProfile.alloc.initWithUrlStringUsernameUserIdentifierService(
+    undefined, s.username || undefined, s.userIdentifier || undefined, s.service
+  ));
+}
+
+// Applies { givenName, familyName, nickname, organization, add: {...}, remove: {...} }
+// to a mutable contact. Removal matches on value, or username for social.
+function applyChanges(m, ch) {
+  if (ch.givenName !== undefined) m.givenName = ch.givenName;
+  if (ch.familyName !== undefined) m.familyName = ch.familyName;
+  if (ch.nickname !== undefined) m.nickname = ch.nickname;
+  if (ch.organization !== undefined) m.organizationName = ch.organization;
+
+  function edit(field, make, matches, adds, removes) {
+    var next = $.NSMutableArray.alloc.init;
+    var cur = m[field];
+    for (var i = 0; i < cur.count; i++) {
+      var lv = cur.objectAtIndex(i);
+      if (!(removes || []).some(function (r) { return matches(lv, r); })) next.addObject(lv);
+    }
+    (adds || []).forEach(function (a) { next.addObject(make(a)); });
+    m[field] = next;
+  }
+
+  var add = ch.add || {};
+  var rm = ch.remove || {};
+  var digits = function (s) { return String(s).replace(/[^\d+]/g, ''); };
+  edit('phoneNumbers', phone, function (lv, r) { return digits(unwrap(lv.value.stringValue)) === digits(r); }, add.phones, rm.phones);
+  edit('emailAddresses', email, function (lv, r) { return unwrap(lv.value).toLowerCase() === String(r).toLowerCase(); }, add.emails, rm.emails);
+  edit('socialProfiles', social, function (lv, r) {
+    var p = lv.value;
+    return unwrap(p.service).toLowerCase() === String(r.service).toLowerCase() &&
+      (unwrap(p.username) === (r.username || '') || unwrap(p.userIdentifier) === (r.userIdentifier || ''));
+  }, add.social, rm.social);
+}
+
+function save(store, request) {
+  var err = Ref();
+  var ok;
+  try {
+    ok = store.executeSaveRequestError(request, err);
+  } catch (e) {
+    return { ok: false, error: { code: 'SAVE_FAILED', message: String(e) } };
+  }
+  if (!ok) {
+    var e = err[0];
+    return { ok: false, error: { code: 'SAVE_FAILED', message: e && !e.isNil() ? unwrap(e.localizedDescription) : 'Contacts refused the change' } };
+  }
+  return { ok: true };
+}
+
+function fetchById(store, id) {
+  var c = store.unifiedContactWithIdentifierKeysToFetchError(id, keysToFetch(), Ref());
+  return !c || c.isNil() ? null : c;
+}
+
+// Some iCloud cards (one with a note, for instance) fault inside the Contacts
+// framework when a script saves them. Contacts.app's own scripting can still
+// edit them, so updates fall back to it.
+function updateThroughApp(id, ch) {
+  var app = Application('Contacts');
+  var p = app.people.byId(id);
+  if (ch.givenName !== undefined) p.firstName = ch.givenName;
+  if (ch.familyName !== undefined) p.lastName = ch.familyName;
+  if (ch.nickname !== undefined) p.nickname = ch.nickname;
+  if (ch.organization !== undefined) p.organization = ch.organization;
+  var add = ch.add || {};
+  var rm = ch.remove || {};
+  var digits = function (v) { return String(v).replace(/[^\d+]/g, ''); };
+  (rm.phones || []).forEach(function (r) {
+    p.phones().filter(function (x) { return digits(x.value()) === digits(r); }).forEach(function (x) { x.delete(); });
+  });
+  (rm.emails || []).forEach(function (r) {
+    p.emails().filter(function (x) { return x.value().toLowerCase() === String(r).toLowerCase(); }).forEach(function (x) { x.delete(); });
+  });
+  (rm.social || []).forEach(function (r) {
+    p.socialProfiles().filter(function (x) {
+      return String(x.serviceName()).toLowerCase() === String(r.service).toLowerCase() &&
+        (x.userName() === (r.username || r.userIdentifier) || x.userIdentifier() === (r.userIdentifier || r.username));
+    }).forEach(function (x) { x.delete(); });
+  });
+  (add.phones || []).forEach(function (a) { p.phones.push(app.Phone({ label: a.label || 'mobile', value: a.value })); });
+  (add.emails || []).forEach(function (a) { p.emails.push(app.Email({ label: a.label || 'home', value: a.value })); });
+  (add.social || []).forEach(function (a) {
+    p.socialProfiles.push(app.SocialProfile({ serviceName: a.service, userName: a.username || a.userIdentifier }));
+  });
+  app.save();
+}

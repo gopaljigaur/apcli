@@ -1,0 +1,16 @@
+// contact.jxa: one contact by __args.id.
+
+(function () {
+  var store = $.CNContactStore.alloc.init;
+  var access = ensureAccess(store);
+  if (!access.ok) return JSON.stringify(access);
+
+  var c = store.unifiedContactWithIdentifierKeysToFetchError(__args.id, keysToFetch(), Ref());
+  if (!c || c.isNil()) {
+    return JSON.stringify({
+      ok: false,
+      error: { code: 'CONTACT_NOT_FOUND', message: 'No contact with id ' + __args.id }
+    });
+  }
+  return JSON.stringify({ ok: true, contact: serialise(c) });
+})();

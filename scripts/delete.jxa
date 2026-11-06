@@ -1,0 +1,16 @@
+// delete.jxa: remove __args.id. Contacts keeps no trash, so the CLI confirms first.
+
+(function () {
+  var store = $.CNContactStore.alloc.init;
+  var access = ensureAccess(store);
+  if (!access.ok) return JSON.stringify(access);
+
+  var c = fetchById(store, __args.id);
+  if (!c) return JSON.stringify({ ok: false, error: { code: 'CONTACT_NOT_FOUND', message: 'No contact with id ' + __args.id } });
+  var gone = serialise(c);
+  var req = $.CNSaveRequest.alloc.init;
+  req.deleteContact(c.mutableCopy);
+  var saved = save(store, req);
+  if (!saved.ok) return JSON.stringify(saved);
+  return JSON.stringify({ ok: true, deleted: gone });
+})();

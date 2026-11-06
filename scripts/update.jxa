@@ -1,0 +1,23 @@
+// update.jxa: change __args.id with __args.changes.
+
+(function () {
+  var store = $.CNContactStore.alloc.init;
+  var access = ensureAccess(store);
+  if (!access.ok) return JSON.stringify(access);
+
+  var c = fetchById(store, __args.id);
+  if (!c) return JSON.stringify({ ok: false, error: { code: 'CONTACT_NOT_FOUND', message: 'No contact with id ' + __args.id } });
+  var m = c.mutableCopy;
+  applyChanges(m, __args.changes);
+  var req = $.CNSaveRequest.alloc.init;
+  req.updateContact(m);
+  var saved = save(store, req);
+  if (!saved.ok) {
+    try {
+      updateThroughApp(__args.id, __args.changes);
+    } catch (e) {
+      return JSON.stringify({ ok: false, error: { code: 'SAVE_FAILED', message: saved.error.message + '; Contacts.app also refused: ' + e } });
+    }
+  }
+  return JSON.stringify({ ok: true, contact: serialise(fetchById(store, __args.id)) });
+})();

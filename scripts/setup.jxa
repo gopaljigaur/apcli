@@ -1,0 +1,12 @@
+// setup.jxa: trigger the macOS Contacts permission and say how many it can see.
+
+(function () {
+  var store = $.CNContactStore.alloc.init;
+  var access = ensureAccess(store);
+  if (!access.ok) return JSON.stringify(access);
+  return JSON.stringify({
+    ok: true,
+    message: 'Contacts access enabled',
+    count: allContacts(store).length
+  });
+})();
