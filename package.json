@@ -1,6 +1,6 @@
 {
   "name": "@gopaljigaur/apcli",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Apple Contacts CLI for macOS - search, read and edit contacts from the command line",
   "main": "lib/jxa-runner.js",
   "bin": {
@@ -30,7 +30,8 @@
     "lib/",
     "scripts/",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "SKILL.md"
   ],
   "publishConfig": {
     "access": "public",
